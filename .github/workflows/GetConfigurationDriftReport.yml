@@ -3,37 +3,45 @@ name: Call Configuration Drift Web API
 
 on:
   workflow_dispatch:
-    
+
 jobs:
   call-api:
     name: POST to Configuration Drift API
-    runs-on: ubuntu-latest  # switch to windows-latest if you prefer pwsh-only
+    runs-on: ubuntu-latest
+
+    # Map environment variables from GitHub Secrets (ensure exact secret names exist)
     env:
-      # Non-secret environment values (from dispatch inputs)
-      AUTO_REMEDIATION: ${{ secrets.AUTO_REMEDIATION }}
-      MANUAL_REMEDIATION: ${{ secrets.ManualRemediation }}
+      # Non-secret-like values (but still stored as secrets for convenience)
+      AUTO_REMEDIATION: ${{ secrets.AUTO_REMEDIATION }}           # "true"/"false"
+      MANUAL_REMEDIATION: ${{ secrets.MANUAL_REMEDIATION }}       # "true"/"false"
       CITRIX_CLOUD_ID: ${{ secrets.CITRIX_CLOUD_ID }}
       CITRIX_INSTANCE_ID: ${{ secrets.CITRIX_INSTANCE_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       MAIL_FROM: ${{ secrets.MAIL_FROM }}
       MAIL_TO: ${{ secrets.MAIL_TO }}
-      USE_CONFIG_LOGGING: ${{ secrets.USE_CONFIGURATION_LOGGING }}
-      NOTIFY_EMAIL: ${{ secrets.CREATE_NOTIFICATION_EMAIL }}
-      API_URL: ${{ secrets.CONFIG_DRIFT_API_URL }}           
-      API_BEARER_TOKEN: ${{ secrets.CONFIG_DRIFT_API_TOKEN }}
+      USE_CONFIGURATION_LOGGING: ${{ secrets.USE_CONFIGURATION_LOGGING }}   # "true"/"false"
+      NOTIFICATION_PER_EMAIL: ${{ secrets.NOTIFICATION_PER_EMAIL }}         # "true"/"false"
+
+      # Sensitive secrets
+      API_URL: ${{ secrets.CONFIG_DRIFT_API_URL }}              # e.g., https://host/api/configuration-drift
+      API_BEARER_TOKEN: ${{ secrets.CONFIG_DRIFT_API_TOKEN }}   # optional
       CITRIX_CLOUD_API_SECRET: ${{ secrets.CITRIX_CLOUD_API_SECRET }}
       CITRIX_CLOUD_API_KEY: ${{ secrets.CITRIX_CLOUD_API_KEY }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+      # Optional: set to "true" to allow -k with curl for dev/self-signed
+      INSECURE_TLS: ${{ secrets.INSECURE_TLS }}
 
     steps:
       - name: Validate required secrets
         shell: bash
         run: |
+          set -euo pipefail
           missing=0
-          for var in API_URL CITRIX_CLOUD_API_SECRET CITRIX_CLOUD_API_KEY AZURE_CLIENT_SECRET; do
-            if [ -z "${!var}" ]; then
-              echo "::error::Missing required secret: $var"
+          for var in API_URL CITRIX_CLOUD_API_SECRET CITRIX_CLOUD_API_KEY AZURE_CLIENT_SECRET CITRIX_CLOUD_ID CITRIX_INSTANCE_ID AZURE_TENANT_ID AZURE_CLIENT_ID MAIL_FROM MAIL_TO; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required secret/env: $var"
               missing=1
             fi
           done
@@ -41,71 +49,75 @@ jobs:
             exit 1
           fi
 
-      - name: Build JSON payload (Linux bash)
-        id: payload
+      - name: Build JSON payload safely with jq
         shell: bash
         run: |
-          # Normalize booleans to true/false (GitHub inputs arrive as strings sometimes)
-          to_bool () { [[ "$1" == "true" || "$1" == "True" ]] && echo true || echo false; }
+          set -euo pipefail
 
-          AUTO=$(to_bool "$AUTO_REMEDIATION")
-          MANUAL=$(to_bool "$MANUAL_REMEDIATION")
-          UCL=$(to_bool "$USE_CONFIG_LOGGING")
-          NOTI=$(to_bool "$NOTIFY_EMAIL")
+          # Normalize booleans (secrets come as strings)
+          to_bool () { [[ "${1:-}" == "true" || "${1:-}" == "True" || "${1:-}" == "1" ]] && echo true || echo false; }
 
-          # Build JSON payload (no jq dependency)
-          cat > payload.json <<'JSON'
-          {
-            "AutomaticRemediation": __AUTO__,
-            "ManualRemediation": __MANUAL__,
-            "CitrixCloudID": "__CLOUDID__",
-            "CitrixCloudAPISecret": "__CLOUDSECRET__",
-            "CitrixCloudAPIKey": "__CLOUDKEY__",
-            "CitrixInstanceID": "__INSTANCEID__",
-            "AzureTenantId": "__TENANT__",
-            "AzureClientId": "__CLIENTID__",
-            "AzureClientSecret": "__CLIENTSECRET__",
-            "MailFrom": "__MAILFROM__",
-            "MailTo": "__MAILTO__",
-            "UseConfigurationLogging": __USELOG__,
-            "NotificationPerEMail": __NOTIFY__
-          }
-          JSON
+          AUTO="$(to_bool "${AUTO_REMEDIATION:-false}")"
+          MANUAL="$(to_bool "${MANUAL_REMEDIATION:-false}")"
+          UCL="$(to_bool "${USE_CONFIGURATION_LOGGING:-true}")"
+          NOTI="$(to_bool "${NOTIFICATION_PER_EMAIL:-true}")"
 
-          # Substitute values safely
-          sed -i "s|__AUTO__|$AUTO|g" payload.json
-          sed -i "s|__MANUAL__|$MANUAL|g" payload.json
-          sed -i "s|__CLOUDID__|$CITRIX_CLOUD_ID|g" payload.json
-          sed -i "s|__CLOUDSECRET__|$CITRIX_CLOUD_API_SECRET|g" payload.json
-          sed -i "s|__CLOUDKEY__|$CITRIX_CLOUD_API_KEY|g" payload.json
-          sed -i "s|__INSTANCEID__|$CITRIX_INSTANCE_ID|g" payload.json
-          sed -i "s|__TENANT__|$AZURE_TENANT_ID|g" payload.json
-          sed -i "s|__CLIENTID__|$AZURE_CLIENT_ID|g" payload.json
-          sed -i "s|__CLIENTSECRET__|$AZURE_CLIENT_SECRET|g" payload.json
-          sed -i "s|__MAILFROM__|$MAIL_FROM|g" payload.json
-          sed -i "s|__MAILTO__|$MAIL_TO|g" payload.json
-          sed -i "s|__USELOG__|$UCL|g" payload.json
-          sed -i "s|__NOTIFY__|$NOTI|g" payload.json
+          # Build JSON with jq to avoid quoting/escaping issues
+          jq -n \
+            --arg CitrixCloudID            "$CITRIX_CLOUD_ID" \
+            --arg CitrixCloudAPISecret     "$CITRIX_CLOUD_API_SECRET" \
+            --arg CitrixCloudAPIKey        "$CITRIX_CLOUD_API_KEY" \
+            --arg CitrixInstanceID         "$CITRIX_INSTANCE_ID" \
+            --arg AzureTenantId            "$AZURE_TENANT_ID" \
+            --arg AzureClientId            "$AZURE_CLIENT_ID" \
+            --arg AzureClientSecret        "$AZURE_CLIENT_SECRET" \
+            --arg MailFrom                 "$MAIL_FROM" \
+            --arg MailTo                   "$MAIL_TO" \
+            --argjson AutomaticRemediation "$AUTO" \
+            --argjson ManualRemediation    "$MANUAL" \
+            --argjson UseConfigurationLogging "$UCL" \
+            --argjson NotificationPerEMail "$NOTI" \
+            '{
+              AutomaticRemediation: $AutomaticRemediation,
+              ManualRemediation: $ManualRemediation,
+              CitrixCloudID: $CitrixCloudID,
+              CitrixCloudAPISecret: $CitrixCloudAPISecret,
+              CitrixCloudAPIKey: $CitrixCloudAPIKey,
+              CitrixInstanceID: $CitrixInstanceID,
+              AzureTenantId: $AzureTenantId,
+              AzureClientId: $AzureClientId,
+              AzureClientSecret: $AzureClientSecret,
+              MailFrom: $MailFrom,
+              MailTo: $MailTo,
+              UseConfigurationLogging: $UseConfigurationLogging,
+              NotificationPerEMail: $NotificationPerEMail
+            }' > payload.json
 
-          echo "Built payload.json:"
-          # Show redacted preview in logs
-          sed -E 's/("CitrixCloudAPISecret": ")[^"]+/\1***REDACTED***/; s/("AzureClientSecret": ")[^"]+/\1***REDACTED***/; s/("CitrixCloudAPIKey": ")[^"]+/\1***REDACTED***/' payload.json
-
-          echo "path=payload.json" >> $GITHUB_OUTPUT
+          echo "Built payload.json (redacted preview):"
+          sed -E \
+            -e 's/("CitrixCloudAPISecret": ")[^"]+/\1***REDACTED***"/' \
+            -e 's/("AzureClientSecret": ")[^"]+/\1***REDACTED***"/' \
+            -e 's/("CitrixCloudAPIKey": ")[^"]+/\1***REDACTED***"/' \
+            payload.json
 
       - name: POST using curl (with retry)
         id: post_curl
         shell: bash
         run: |
-          TLS_OPT=""
+          set -euo pipefail
 
-          AUTH=()
-          if [ -n "$API_BEARER_TOKEN" ]; then
-            AUTH=(-H "Authorization: Bearer $API_BEARER_TOKEN")
+          TLS_OPT=""
+          if [[ "${INSECURE_TLS:-false}" == "true" ]]; then
+            echo "WARNING: INSECURE_TLS=true => using curl -k (dev only)"
+            TLS_OPT="-k"
           fi
 
-          set -e
-          curl ${TLS_OPT} -sS -X POST "$API_URL" \
+          AUTH=()
+          if [ -n "${API_BEARER_TOKEN:-}" ]; then
+            AUTH=(-H "Authorization: Bearer ${API_BEARER_TOKEN}")
+          fi
+
+          curl ${TLS_OPT} -sS -X POST "${API_URL}" \
             -H "Content-Type: application/json" \
             "${AUTH[@]}" \
             --retry 3 --retry-delay 3 \
@@ -113,8 +125,10 @@ jobs:
             --data-binary @payload.json \
             -o response.json
 
-          echo "API responded with:"
-          cat response.json | sed -E 's/("[A-Za-z0-9_]*Secret": ")[^"]+/\1***REDACTED***/g' || true
+          echo "API responded with (redacted):"
+          sed -E \
+            -e 's/("[A-Za-z0-9_]*Secret":\s*")[^"]+/\1***REDACTED***"/g' \
+            response.json || true
 
       - name: Upload response artifact
         uses: actions/upload-artifact@v4
@@ -122,3 +136,10 @@ jobs:
           name: api-response
           path: response.json
           if-no-files-found: warn
+
+      # Optional: Defense-in-depth if you ever switch to pull_request triggers
+      # - name: Guard against forks
+      #   if: ${{ github.event.pull_request.head.repo.fork == true }}
+      #   run: |
+      #     echo "Fork detected – refusing to run with secrets"
+      #     exit 1
