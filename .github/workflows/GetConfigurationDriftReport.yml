@@ -3,92 +3,28 @@ name: Call Configuration Drift Web API
 
 on:
   workflow_dispatch:
-    inputs:
-      AutomaticRemediation:
-        description: "Automatic remediation"
-        required: true
-        type: boolean
-        default: false
-      ManualRemediation:
-        description: "Manual remediation"
-        required: true
-        type: boolean
-        default: false
-      CitrixCloudID:
-        description: "Citrix Cloud ID"
-        required: true
-        type: string
-        default: ""
-      CitrixInstanceID:
-        description: "Citrix Instance ID (GUID)"
-        required: true
-        type: string
-        default: ""
-      AzureTenantId:
-        description: "Azure Tenant ID (GUID)"
-        required: true
-        type: string
-        default: ""
-      AzureClientId:
-        description: "Azure Client ID (GUID)"
-        required: true
-        type: string
-        default: ""
-      MailFrom:
-        description: "From email"
-        required: true
-        type: string
-        default: ""
-      MailTo:
-        description: "To email"
-        required: true
-        type: string
-        default: ""
-      UseConfigurationLogging:
-        description: "Use configuration logging"
-        required: true
-        type: boolean
-        default: true
-      NotificationPerEMail:
-        description: "Send notification per email"
-        required: true
-        type: boolean
-        default: true
-      # Optional: allow switching between curl and PowerShell client
-      client:
-        description: "Client to use for the POST (curl|pwsh)"
-        required: false
-        type: choice
-        default: curl
-        options:
-          - curl
-          - pwsh
-
+    
 jobs:
   call-api:
     name: POST to Configuration Drift API
     runs-on: ubuntu-latest  # switch to windows-latest if you prefer pwsh-only
     env:
       # Non-secret environment values (from dispatch inputs)
-      AUTO_REMEDIATION: ${{ inputs.AutomaticRemediation }}
-      MANUAL_REMEDIATION: ${{ inputs.ManualRemediation }}
-      CITRIX_CLOUD_ID: ${{ inputs.CitrixCloudID }}
-      CITRIX_INSTANCE_ID: ${{ inputs.CitrixInstanceID }}
-      AZURE_TENANT_ID: ${{ inputs.AzureTenantId }}
-      AZURE_CLIENT_ID: ${{ inputs.AzureClientId }}
-      MAIL_FROM: ${{ inputs.MailFrom }}
-      MAIL_TO: ${{ inputs.MailTo }}
-      USE_CONFIG_LOGGING: ${{ inputs.UseConfigurationLogging }}
-      NOTIFY_EMAIL: ${{ inputs.NotificationPerEMail }}
-
-      # Secrets (set in GitHub → Settings → Secrets and variables → Actions)
-      API_URL: ${{ secrets.CONFIG_DRIFT_API_URL }}           # e.g., https://your-host.example.com/api/configuration-drift
-      API_BEARER_TOKEN: ${{ secrets.CONFIG_DRIFT_API_TOKEN }}# JWT/OAuth token if your API requires it
+      AUTO_REMEDIATION: ${{ secrets.AUTO_REMEDIATION }}
+      MANUAL_REMEDIATION: ${{ secrets.ManualRemediation }}
+      CITRIX_CLOUD_ID: ${{ secrets.CITRIX_CLOUD_ID }}
+      CITRIX_INSTANCE_ID: ${{ secrets.CITRIX_INSTANCE_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      MAIL_FROM: ${{ secrets.MAIL_FROM }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
+      USE_CONFIG_LOGGING: ${{ secrets.USE_CONFIGURATION_LOGGING }}
+      NOTIFY_EMAIL: ${{ secrets.CREATE_NOTIFICATION_EMAIL }}
+      API_URL: ${{ secrets.CONFIG_DRIFT_API_URL }}           
+      API_BEARER_TOKEN: ${{ secrets.CONFIG_DRIFT_API_TOKEN }}
       CITRIX_CLOUD_API_SECRET: ${{ secrets.CITRIX_CLOUD_API_SECRET }}
       CITRIX_CLOUD_API_KEY: ${{ secrets.CITRIX_CLOUD_API_KEY }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      # For dev with self-signed certs, set to "true" as a secret. Default false for prod.
-      INSECURE_TLS: ${{ secrets.INSECURE_TLS }}
 
     steps:
       - name: Validate required secrets
