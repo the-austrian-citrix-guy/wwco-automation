@@ -94,15 +94,10 @@ jobs:
           echo "path=payload.json" >> $GITHUB_OUTPUT
 
       - name: POST using curl (with retry)
-        if: ${{ inputs.client == 'curl' }}
         id: post_curl
         shell: bash
         run: |
           TLS_OPT=""
-          if [ "${INSECURE_TLS}" = "true" ]; then
-            echo "WARNING: Running with -k (insecure TLS) because INSECURE_TLS=true"
-            TLS_OPT="-k"
-          fi
 
           AUTH=()
           if [ -n "$API_BEARER_TOKEN" ]; then
@@ -120,53 +115,6 @@ jobs:
 
           echo "API responded with:"
           cat response.json | sed -E 's/("[A-Za-z0-9_]*Secret": ")[^"]+/\1***REDACTED***/g' || true
-
-      - name: POST using PowerShell (Windows only)
-        if: ${{ inputs.client == 'pwsh' }}
-        uses: actions/setup-powershell@v1
-
-      - name: Invoke-RestMethod (pwsh)
-        if: ${{ inputs.client == 'pwsh' }}
-        shell: pwsh
-        run: |
-          $insecure = "${env:INSECURE_TLS}" -eq "true"
-          if ($insecure) {
-            Write-Warning "Skipping certificate validation as INSECURE_TLS=true"
-            add-type @"
-            using System.Net.Security;
-            using System.Security.Cryptography.X509Certificates;
-            public static class TrustAllCertsPolicy {
-              public static bool Validator(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) { return true; }
-            }
-"@
-            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s,$c,$ch,$e) return $true }
-          }
-
-          $headers = @{}
-          if ("${env:API_BEARER_TOKEN}") {
-            $headers["Authorization"] = "Bearer ${env:API_BEARER_TOKEN}"
-          }
-
-          $uri = "${env:API_URL}"
-          $body = Get-Content -Raw -Path "payload.json"
-
-          try {
-            $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType "application/json" -Body $body
-            $response | ConvertTo-Json -Depth 6 | Out-File -FilePath "response.json" -Encoding utf8
-            Write-Host "API responded with:"
-            (Get-Content response.json -Raw) -replace '("?[A-Za-z0-9_]*Secret"?:\s*")([^"]+)','$1***REDACTED***' | Write-Host
-          } catch {
-            Write-Error "Request failed: $($_.Exception.Message)"
-            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
-              $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-              $errBody = $reader.ReadToEnd()
-              $reader.Close()
-              Set-Content -Path response.json -Value $errBody
-              Write-Host "Error body:"
-              $errBody | Write-Host
-            }
-            throw
-          }
 
       - name: Upload response artifact
         uses: actions/upload-artifact@v4
