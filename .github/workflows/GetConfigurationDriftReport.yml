@@ -1,0 +1,240 @@
+
+name: Call Configuration Drift Web API
+
+on:
+  workflow_dispatch:
+    inputs:
+      AutomaticRemediation:
+        description: "Automatic remediation"
+        required: true
+        type: boolean
+        default: false
+      ManualRemediation:
+        description: "Manual remediation"
+        required: true
+        type: boolean
+        default: false
+      CitrixCloudID:
+        description: "Citrix Cloud ID"
+        required: true
+        type: string
+        default: ""
+      CitrixInstanceID:
+        description: "Citrix Instance ID (GUID)"
+        required: true
+        type: string
+        default: ""
+      AzureTenantId:
+        description: "Azure Tenant ID (GUID)"
+        required: true
+        type: string
+        default: ""
+      AzureClientId:
+        description: "Azure Client ID (GUID)"
+        required: true
+        type: string
+        default: ""
+      MailFrom:
+        description: "From email"
+        required: true
+        type: string
+        default: ""
+      MailTo:
+        description: "To email"
+        required: true
+        type: string
+        default: ""
+      UseConfigurationLogging:
+        description: "Use configuration logging"
+        required: true
+        type: boolean
+        default: true
+      NotificationPerEMail:
+        description: "Send notification per email"
+        required: true
+        type: boolean
+        default: true
+      # Optional: allow switching between curl and PowerShell client
+      client:
+        description: "Client to use for the POST (curl|pwsh)"
+        required: false
+        type: choice
+        default: curl
+        options:
+          - curl
+          - pwsh
+
+jobs:
+  call-api:
+    name: POST to Configuration Drift API
+    runs-on: ubuntu-latest  # switch to windows-latest if you prefer pwsh-only
+    env:
+      # Non-secret environment values (from dispatch inputs)
+      AUTO_REMEDIATION: ${{ inputs.AutomaticRemediation }}
+      MANUAL_REMEDIATION: ${{ inputs.ManualRemediation }}
+      CITRIX_CLOUD_ID: ${{ inputs.CitrixCloudID }}
+      CITRIX_INSTANCE_ID: ${{ inputs.CitrixInstanceID }}
+      AZURE_TENANT_ID: ${{ inputs.AzureTenantId }}
+      AZURE_CLIENT_ID: ${{ inputs.AzureClientId }}
+      MAIL_FROM: ${{ inputs.MailFrom }}
+      MAIL_TO: ${{ inputs.MailTo }}
+      USE_CONFIG_LOGGING: ${{ inputs.UseConfigurationLogging }}
+      NOTIFY_EMAIL: ${{ inputs.NotificationPerEMail }}
+
+      # Secrets (set in GitHub → Settings → Secrets and variables → Actions)
+      API_URL: ${{ secrets.CONFIG_DRIFT_API_URL }}           # e.g., https://your-host.example.com/api/configuration-drift
+      API_BEARER_TOKEN: ${{ secrets.CONFIG_DRIFT_API_TOKEN }}# JWT/OAuth token if your API requires it
+      CITRIX_CLOUD_API_SECRET: ${{ secrets.CITRIX_CLOUD_API_SECRET }}
+      CITRIX_CLOUD_API_KEY: ${{ secrets.CITRIX_CLOUD_API_KEY }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # For dev with self-signed certs, set to "true" as a secret. Default false for prod.
+      INSECURE_TLS: ${{ secrets.INSECURE_TLS }}
+
+    steps:
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          missing=0
+          for var in API_URL CITRIX_CLOUD_API_SECRET CITRIX_CLOUD_API_KEY AZURE_CLIENT_SECRET; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Missing required secret: $var"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Build JSON payload (Linux bash)
+        id: payload
+        shell: bash
+        run: |
+          # Normalize booleans to true/false (GitHub inputs arrive as strings sometimes)
+          to_bool () { [[ "$1" == "true" || "$1" == "True" ]] && echo true || echo false; }
+
+          AUTO=$(to_bool "$AUTO_REMEDIATION")
+          MANUAL=$(to_bool "$MANUAL_REMEDIATION")
+          UCL=$(to_bool "$USE_CONFIG_LOGGING")
+          NOTI=$(to_bool "$NOTIFY_EMAIL")
+
+          # Build JSON payload (no jq dependency)
+          cat > payload.json <<'JSON'
+          {
+            "AutomaticRemediation": __AUTO__,
+            "ManualRemediation": __MANUAL__,
+            "CitrixCloudID": "__CLOUDID__",
+            "CitrixCloudAPISecret": "__CLOUDSECRET__",
+            "CitrixCloudAPIKey": "__CLOUDKEY__",
+            "CitrixInstanceID": "__INSTANCEID__",
+            "AzureTenantId": "__TENANT__",
+            "AzureClientId": "__CLIENTID__",
+            "AzureClientSecret": "__CLIENTSECRET__",
+            "MailFrom": "__MAILFROM__",
+            "MailTo": "__MAILTO__",
+            "UseConfigurationLogging": __USELOG__,
+            "NotificationPerEMail": __NOTIFY__
+          }
+          JSON
+
+          # Substitute values safely
+          sed -i "s|__AUTO__|$AUTO|g" payload.json
+          sed -i "s|__MANUAL__|$MANUAL|g" payload.json
+          sed -i "s|__CLOUDID__|$CITRIX_CLOUD_ID|g" payload.json
+          sed -i "s|__CLOUDSECRET__|$CITRIX_CLOUD_API_SECRET|g" payload.json
+          sed -i "s|__CLOUDKEY__|$CITRIX_CLOUD_API_KEY|g" payload.json
+          sed -i "s|__INSTANCEID__|$CITRIX_INSTANCE_ID|g" payload.json
+          sed -i "s|__TENANT__|$AZURE_TENANT_ID|g" payload.json
+          sed -i "s|__CLIENTID__|$AZURE_CLIENT_ID|g" payload.json
+          sed -i "s|__CLIENTSECRET__|$AZURE_CLIENT_SECRET|g" payload.json
+          sed -i "s|__MAILFROM__|$MAIL_FROM|g" payload.json
+          sed -i "s|__MAILTO__|$MAIL_TO|g" payload.json
+          sed -i "s|__USELOG__|$UCL|g" payload.json
+          sed -i "s|__NOTIFY__|$NOTI|g" payload.json
+
+          echo "Built payload.json:"
+          # Show redacted preview in logs
+          sed -E 's/("CitrixCloudAPISecret": ")[^"]+/\1***REDACTED***/; s/("AzureClientSecret": ")[^"]+/\1***REDACTED***/; s/("CitrixCloudAPIKey": ")[^"]+/\1***REDACTED***/' payload.json
+
+          echo "path=payload.json" >> $GITHUB_OUTPUT
+
+      - name: POST using curl (with retry)
+        if: ${{ inputs.client == 'curl' }}
+        id: post_curl
+        shell: bash
+        run: |
+          TLS_OPT=""
+          if [ "${INSECURE_TLS}" = "true" ]; then
+            echo "WARNING: Running with -k (insecure TLS) because INSECURE_TLS=true"
+            TLS_OPT="-k"
+          fi
+
+          AUTH=()
+          if [ -n "$API_BEARER_TOKEN" ]; then
+            AUTH=(-H "Authorization: Bearer $API_BEARER_TOKEN")
+          fi
+
+          set -e
+          curl ${TLS_OPT} -sS -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            "${AUTH[@]}" \
+            --retry 3 --retry-delay 3 \
+            --fail \
+            --data-binary @payload.json \
+            -o response.json
+
+          echo "API responded with:"
+          cat response.json | sed -E 's/("[A-Za-z0-9_]*Secret": ")[^"]+/\1***REDACTED***/g' || true
+
+      - name: POST using PowerShell (Windows only)
+        if: ${{ inputs.client == 'pwsh' }}
+        uses: actions/setup-powershell@v1
+
+      - name: Invoke-RestMethod (pwsh)
+        if: ${{ inputs.client == 'pwsh' }}
+        shell: pwsh
+        run: |
+          $insecure = "${env:INSECURE_TLS}" -eq "true"
+          if ($insecure) {
+            Write-Warning "Skipping certificate validation as INSECURE_TLS=true"
+            add-type @"
+            using System.Net.Security;
+            using System.Security.Cryptography.X509Certificates;
+            public static class TrustAllCertsPolicy {
+              public static bool Validator(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) { return true; }
+            }
+"@
+            [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { param($s,$c,$ch,$e) return $true }
+          }
+
+          $headers = @{}
+          if ("${env:API_BEARER_TOKEN}") {
+            $headers["Authorization"] = "Bearer ${env:API_BEARER_TOKEN}"
+          }
+
+          $uri = "${env:API_URL}"
+          $body = Get-Content -Raw -Path "payload.json"
+
+          try {
+            $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -ContentType "application/json" -Body $body
+            $response | ConvertTo-Json -Depth 6 | Out-File -FilePath "response.json" -Encoding utf8
+            Write-Host "API responded with:"
+            (Get-Content response.json -Raw) -replace '("?[A-Za-z0-9_]*Secret"?:\s*")([^"]+)','$1***REDACTED***' | Write-Host
+          } catch {
+            Write-Error "Request failed: $($_.Exception.Message)"
+            if ($_.Exception.Response -and $_.Exception.Response.GetResponseStream()) {
+              $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+              $errBody = $reader.ReadToEnd()
+              $reader.Close()
+              Set-Content -Path response.json -Value $errBody
+              Write-Host "Error body:"
+              $errBody | Write-Host
+            }
+            throw
+          }
+
+      - name: Upload response artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-response
+          path: response.json
+          if-no-files-found: warn
